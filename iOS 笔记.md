@@ -102,11 +102,11 @@ RunLoop这边我大概讲一下
 3. Springboard接受touch event之后转给App进程中
 4. RunLoop处理Source 1，Source1 就会触发回调，并调用_UIApplicationHandleEventQueue() 进行应用内部的分发。
 5. RunLoop处理完毕进入睡眠，此前会释放旧的autorelease pool并新建一个autorelease pool
-
-深挖请去[深入理解RunLoop](https://link.jianshu.com?t=http://blog.ibireme.com/2015/05/18/runloop/)
+```
+深挖请去[深入理解RunLoop](http://blog.ibireme.com/2015/05/18/runloop/)
 
 UIResponder是UIView的父类，UIView是UIControl的父类。
-```
+
 
 ## 静态库，动态库与 Framework
 
@@ -114,4 +114,131 @@ UIResponder是UIView的父类，UIView是UIControl的父类。
 
 ## Objective-C 内存管理
 
+> - 对于 ARC 来说，系统会自动在 dealloc 的时候把所有的 Ivar 都执行 release，因此我们也就没有必要在 dealloc 中写有关 release 的代码了。
 > - https://segmentfault.com/a/1190000004943276
+
+## [GCD实现单一资源的多读单写](https://segmentfault.com/a/1190000002712678)
+
+```objective-c
+_ioQueue = dispatch_queue_create("ioQueue", DISPATCH_QUEUE_CONCURRENT);
+- (void)setSafeObject:(id)object forKey:(NSString *)key
+{
+    key = [key copy];
+    dispatch_barrier_async(self.ioQueue, ^{
+        if (key && object) {
+            [_dic setObject:object forKey:key];
+        }
+    });
+}
+- (id)getSafeObjectForKey:(NSString *)key
+{
+    __block id result = nil;
+    dispatch_sync(self.ioQueue, ^{
+        result = [_dic objectForKey:key];
+    });
+    return result;
+}
+```
+
+## 元类 (meta-class)
+
+> - 元类是一个类对象的类。每一个类有他自己独一无二的元类（因为每个类能够有自己独一无二的方法列表）。这就意味着类对象的类并不是和他们一样的类。
+> - 元类能确保类对象有所有底层类的实例和类方法，中间加上所有自己的类方法。所有类继承自NSObject，这意味着NSObject所有的实例和协议方法为所有类（和元类）对象都定义了。
+> - 所有元类使用基类的元类（NSObject 元类）来作为他们的类，包括只在运行时自定义的类的元类。
+
+![metaclass](/Users/kira/Desktop/iOS_Notes/metaclass.png)
+
+https://www.jianshu.com/p/79b06fabb459
+
+## 野指针的常见写法
+
+https://ctinusdev.github.io/2017/03/03/WriteWildPointer/
+
+### 对象提前释放了
+
+#### 常见写法1：
+
+异步方法block回调中，没有强引用self。
+
+```
+
+__weak typeof(self) weakself = self;
+[obj method:^(id result) {
+    [weakself someMethod];
+}];
+-(void)someMethod
+{
+    self.test = ....;
+    ...
+}
+```
+
+**问题原因：**
+ARC下，由于性能原因self既不是strong也不是weak，而是`unsafe_unretained`的。上面代码block并没有引用强引用self。若是在执行[weakSelf someMethod]时，刚好self被释放了，那么self.test 这句的执行就有可能造成野指针崩溃。
+**解决方案：**
+在进入block时，先强引用weakself。
+
+```
+
+__weak typeof(self) weakself = self;
+    [obj method:^(id result) {
+        __strong typeof(self) strongself = weakSelf;
+        [strongself someMethod];
+    }];
+```
+
+#### 常见写法2:
+
+```
+
+@interface viewController: UIViewController
+@end
+
+@implementation viewController
+
+-(void)someButtonClick:(id)sender
+{
+    [self.navigationController popViewControllerAnimated:NO];
+    
+    [self someMethod];
+}
+@end
+```
+
+**问题原因：**
+由于self在pop之后就会被释放，在pop之后，继续使用self，就可能会导致野指针。
+**解决方案：**
+在pop和dismiss之后不要在使用self，关于self的操作都在pop和dismiss之前。
+
+### 对象的多次释放。
+
+#### 常见写法1:
+
+多个线程同时对某个对象赋值
+
+```
+
+@interface SomeClass: NSObject
+@property (nonatomic, strong) NSArray *array;
+@end
+
+@implementation SomeClass
+
+- (void)viewDidLoad
+{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        self.array = @[@"test"];
+    });
+    self.array = @[@"test"];
+}
+@end
+```
+
+**问题原因：**
+在调用setArray:时，新的值会被retain，旧的值会被release。如果两个线程同时执行了setArray:,那么旧的值就可能会release放两次。
+
+**解决方案：**
+找个问题不难解决，对象赋之前先加锁，再赋值就可以解决这类问题。
+
+### assign 修饰 OC 对象。
+UIWebView 里的 delegate 为 assign
